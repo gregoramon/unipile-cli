@@ -169,8 +169,24 @@ export async function setProfileApiKey(
 export async function getProfileApiKey(
   profile: string
 ): Promise<{ apiKey: string | null; backend: SecretBackend }> {
+  const secretKey = buildSecretKey(profile);
   const result = await withFallback((resolvedStore) =>
-    resolvedStore.get(buildSecretKey(profile))
+    resolvedStore.get(secretKey)
   );
+
+  // If keychain is available but does not contain the key, try file fallback.
+  // This keeps behavior stable when previous writes were file-based in headless environments.
+  if (result.backend === "keychain" && !result.value) {
+    try {
+      const fileFallback = new FileSecretStore();
+      const fileValue = await fileFallback.get(secretKey);
+      if (fileValue) {
+        return { apiKey: fileValue, backend: fileFallback.backend };
+      }
+    } catch {
+      // Keep primary result when fallback lookup fails.
+    }
+  }
+
   return { apiKey: result.value, backend: result.backend };
 }

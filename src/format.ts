@@ -1,10 +1,12 @@
 import type {
   Account,
+  Chat,
   ContactResolution,
   Message,
   OutputMode,
   QmdQueryResult
 } from "./types.js";
+import { isGroupChat } from "./provider.js";
 
 /** Writes either JSON or text output depending on selected output mode. */
 export function printResult(
@@ -76,6 +78,24 @@ export function formatMessages(messages: Message[]): string {
   for (const message of messages) {
     lines.push(
       `- ${message.timestamp ?? ""} chat=${message.chat_id} message=${message.id} sender=${message.sender_id} text=${message.text ?? ""}`
+    );
+  }
+
+  return lines.join("\n");
+}
+
+/** Formats chat lists and marks group-like chats for easier targeting. */
+export function formatChats(chats: Chat[]): string {
+  if (chats.length === 0) {
+    return "No chats found.";
+  }
+
+  const lines = ["Chats:"];
+  for (const chat of chats) {
+    const isGroup = isGroupChat(chat);
+    const label = isGroup ? "group" : "direct";
+    lines.push(
+      `- ${chat.id}  [${label}]  ${chat.name ?? "(no name)"}  unread=${chat.unread_count ?? 0}`
     );
   }
 

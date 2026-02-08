@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import type {
   Account,
   Chat,
@@ -44,6 +46,10 @@ export interface StartChatArgs {
   accountId: string;
   attendeesIds: string[];
   text?: string;
+  attachments?: string[];
+  voiceMessage?: string;
+  videoMessage?: string;
+  typingDuration?: number;
 }
 
 /** Removes a trailing slash from DSN-like base URLs. */
@@ -188,12 +194,44 @@ export class UnipileClient {
     chatId: string;
     text: string;
     accountId?: string;
+    attachments?: string[];
+    voiceMessage?: string;
+    videoMessage?: string;
+    typingDuration?: number;
   }): Promise<{ object: string; message_id: string | null }> {
     const formData = new FormData();
     formData.set("text", args.text);
 
     if (args.accountId) {
       formData.set("account_id", args.accountId);
+    }
+
+    if (args.typingDuration !== undefined) {
+      formData.set("typing_duration", String(args.typingDuration));
+    }
+
+    if (args.voiceMessage) {
+      const voiceBuffer = await readFile(args.voiceMessage);
+      formData.set(
+        "voice_message",
+        new File([voiceBuffer], basename(args.voiceMessage))
+      );
+    }
+
+    if (args.videoMessage) {
+      const videoBuffer = await readFile(args.videoMessage);
+      formData.set(
+        "video_message",
+        new File([videoBuffer], basename(args.videoMessage))
+      );
+    }
+
+    for (const attachment of args.attachments ?? []) {
+      const attachmentBuffer = await readFile(attachment);
+      formData.append(
+        "attachments",
+        new File([attachmentBuffer], basename(attachment))
+      );
     }
 
     return this.request<{ object: string; message_id: string | null }>(
@@ -220,6 +258,34 @@ export class UnipileClient {
 
     if (args.text && args.text.length > 0) {
       formData.set("text", args.text);
+    }
+
+    if (args.typingDuration !== undefined) {
+      formData.set("typing_duration", String(args.typingDuration));
+    }
+
+    if (args.voiceMessage) {
+      const voiceBuffer = await readFile(args.voiceMessage);
+      formData.set(
+        "voice_message",
+        new File([voiceBuffer], basename(args.voiceMessage))
+      );
+    }
+
+    if (args.videoMessage) {
+      const videoBuffer = await readFile(args.videoMessage);
+      formData.set(
+        "video_message",
+        new File([videoBuffer], basename(args.videoMessage))
+      );
+    }
+
+    for (const attachment of args.attachments ?? []) {
+      const attachmentBuffer = await readFile(attachment);
+      formData.append(
+        "attachments",
+        new File([attachmentBuffer], basename(attachment))
+      );
     }
 
     return this.request<{ object: string; chat_id: string | null; message_id: string | null }>(
