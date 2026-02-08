@@ -103,7 +103,10 @@ unipile send --account-id <ACCOUNT_ID> --to-query "john sales" --text "Hello" --
 
 ## Branch workflow + CodeRabbit
 
+Never develop directly on `main`. Always create a feature/fix branch and open a PR.
+
 ```bash
+git checkout -b codex/feature-my-change
 npm run coderabbit:status
 npm run coderabbit:review
 ```

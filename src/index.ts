@@ -7,6 +7,7 @@ import { getProfileApiKey, setProfileApiKey } from "./storage.js";
 import type { AppConfig, ChatAttendee, GlobalCliOptions, OutputMode } from "./types.js";
 import { UnipileApiError, UnipileClient } from "./unipile.js";
 
+/** Renders CLI usage text. */
 function help(): string {
   return [
     "unipile-cli",
@@ -35,6 +36,7 @@ function help(): string {
   ].join("\n");
 }
 
+/** Parses global flags and returns remaining command tokens. */
 function parseGlobal(argv: string[]): { global: GlobalCliOptions; rest: string[] } {
   const global: GlobalCliOptions = {
     profile: "default",
@@ -76,6 +78,7 @@ function parseGlobal(argv: string[]): { global: GlobalCliOptions; rest: string[]
   return { global, rest };
 }
 
+/** Parses command-level `--flag value` pairs into a simple map. */
 function parseFlags(tokens: string[]): Map<string, string | boolean> {
   const flags = new Map<string, string | boolean>();
 
@@ -100,11 +103,13 @@ function parseFlags(tokens: string[]): Map<string, string | boolean> {
   return flags;
 }
 
+/** Reads an optional string flag from the parsed map. */
 function getString(flags: Map<string, string | boolean>, key: string): string | undefined {
   const value = flags.get(key);
   return typeof value === "string" ? value : undefined;
 }
 
+/** Reads and validates a numeric flag from the parsed map. */
 function getNumber(flags: Map<string, string | boolean>, key: string): number | undefined {
   const value = getString(flags, key);
   if (!value) {
@@ -119,6 +124,7 @@ function getNumber(flags: Map<string, string | boolean>, key: string): number | 
   return parsed;
 }
 
+/** Reads a required string flag or throws a user-facing error. */
 function requireString(flags: Map<string, string | boolean>, key: string): string {
   const value = getString(flags, key);
   if (!value) {
@@ -127,12 +133,14 @@ function requireString(flags: Map<string, string | boolean>, key: string): strin
   return value;
 }
 
+/** Async sleep helper used by polling commands. */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
 }
 
+/** Converts ISO-like timestamps to epoch millis, returning null when invalid. */
 function toEpochMillis(value: string | null | undefined): number | null {
   if (!value || value.trim().length === 0) {
     return null;
@@ -142,6 +150,7 @@ function toEpochMillis(value: string | null | undefined): number | null {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
+/** Builds an authenticated Unipile client for the selected profile. */
 async function buildClient(global: GlobalCliOptions): Promise<{
   client: UnipileClient;
   config: AppConfig;
@@ -167,6 +176,7 @@ async function buildClient(global: GlobalCliOptions): Promise<{
   };
 }
 
+/** Stores DSN/profile config and API key credentials for later commands. */
 async function commandAuthSet(args: string[], global: GlobalCliOptions): Promise<number> {
   const flags = parseFlags(args);
   const dsn = requireString(flags, "dsn");
@@ -204,6 +214,7 @@ async function commandAuthSet(args: string[], global: GlobalCliOptions): Promise
   return 0;
 }
 
+/** Prints auth/config status for the selected profile. */
 async function commandAuthStatus(global: GlobalCliOptions): Promise<number> {
   const config = await loadConfig();
   const profileName = global.profile || config.profile;
@@ -233,6 +244,7 @@ async function commandAuthStatus(global: GlobalCliOptions): Promise<number> {
   return 0;
 }
 
+/** Lists accounts and optionally filters by provider type. */
 async function commandAccountsList(args: string[], global: GlobalCliOptions): Promise<number> {
   const flags = parseFlags(args);
   const provider = getString(flags, "provider")?.toUpperCase();
@@ -251,6 +263,7 @@ async function commandAccountsList(args: string[], global: GlobalCliOptions): Pr
   return 0;
 }
 
+/** Fetches attendees and chats used by contact resolution and send flows. */
 async function fetchResolutionContext(
   client: UnipileClient,
   accountId: string,
@@ -264,6 +277,7 @@ async function fetchResolutionContext(
   return { attendees, chats };
 }
 
+/** Runs contact search/resolve using lexical, recency, and optional QMD signals. */
 async function commandContacts(args: string[], global: GlobalCliOptions, resolveOnly: boolean): Promise<number> {
   const flags = parseFlags(args);
   const accountId = requireString(flags, "account-id");
@@ -312,6 +326,7 @@ async function commandContacts(args: string[], global: GlobalCliOptions, resolve
   return 0;
 }
 
+/** Sends a message using chat id, attendee id, or query-based resolution. */
 async function commandSend(args: string[], global: GlobalCliOptions): Promise<number> {
   const flags = parseFlags(args);
   const accountId = requireString(flags, "account-id");
@@ -456,6 +471,7 @@ async function commandSend(args: string[], global: GlobalCliOptions): Promise<nu
   return 0;
 }
 
+/** Pulls messages with optional lower-bound timestamp filtering. */
 async function commandInboxPull(args: string[], global: GlobalCliOptions): Promise<number> {
   const flags = parseFlags(args);
   const accountId = requireString(flags, "account-id");
@@ -479,6 +495,7 @@ async function commandInboxPull(args: string[], global: GlobalCliOptions): Promi
   return 0;
 }
 
+/** Polls inbox messages at a fixed interval for headless watch workflows. */
 async function commandInboxWatch(args: string[], global: GlobalCliOptions): Promise<number> {
   const flags = parseFlags(args);
   const accountId = requireString(flags, "account-id");
@@ -583,6 +600,7 @@ interface DoctorCheck {
   detail: string;
 }
 
+/** Renders doctor check output in a readable text layout. */
 function formatDoctorChecks(checks: DoctorCheck[], summary: string): string {
   const lines = [summary, "", "Checks:"];
   for (const check of checks) {
@@ -591,6 +609,7 @@ function formatDoctorChecks(checks: DoctorCheck[], summary: string): string {
   return lines.join("\n");
 }
 
+/** Runs end-to-end readiness checks for config, Unipile API, and optional QMD. */
 async function commandDoctorRun(args: string[], global: GlobalCliOptions): Promise<number> {
   const flags = parseFlags(args);
   const accountId = getString(flags, "account-id");
@@ -738,6 +757,7 @@ async function commandDoctorRun(args: string[], global: GlobalCliOptions): Promi
   return hasFailures ? 1 : 0;
 }
 
+/** Dispatches argv tokens to command handlers and returns exit status. */
 async function run(): Promise<number> {
   const { global, rest } = parseGlobal(process.argv.slice(2));
 

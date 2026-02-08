@@ -18,24 +18,29 @@ interface KeytarLike {
   setPassword(service: string, account: string, password: string): Promise<void>;
 }
 
+/** File-backed secret store used when keychain access is unavailable. */
 class FileSecretStore implements SecretStore {
   public readonly backend: SecretBackend = "file";
 
+  /** Resolves the file path used to persist fallback secrets. */
   private get path(): string {
     return join(getConfigDir(), SECRET_FILE);
   }
 
+  /** Reads one secret value by key from the file-backed store. */
   public async get(secretKey: string): Promise<string | null> {
     const all = await this.readAll();
     return all[secretKey] ?? null;
   }
 
+  /** Writes one secret value by key to the file-backed store. */
   public async set(secretKey: string, value: string): Promise<void> {
     const all = await this.readAll();
     all[secretKey] = value;
     await this.writeAll(all);
   }
 
+  /** Loads all stored secrets from disk, returning an empty map when absent. */
   private async readAll(): Promise<Record<string, string>> {
     try {
       const raw = await fs.readFile(this.path, "utf8");
@@ -49,6 +54,7 @@ class FileSecretStore implements SecretStore {
     }
   }
 
+  /** Persists the full secret map with restrictive file permissions. */
   private async writeAll(payload: Record<string, string>): Promise<void> {
     await ensureConfigDir();
     await fs.writeFile(this.path, `${JSON.stringify(payload, null, 2)}\n`, {
@@ -57,15 +63,18 @@ class FileSecretStore implements SecretStore {
   }
 }
 
+/** Keychain-backed secret store adapter for keytar. */
 class KeytarSecretStore implements SecretStore {
   public readonly backend: SecretBackend = "keychain";
 
   public constructor(private readonly keytar: KeytarLike) {}
 
+  /** Reads one secret value from the OS keychain via keytar. */
   public async get(secretKey: string): Promise<string | null> {
     return this.keytar.getPassword(SERVICE_NAME, secretKey);
   }
 
+  /** Writes one secret value to the OS keychain via keytar. */
   public async set(secretKey: string, value: string): Promise<void> {
     await this.keytar.setPassword(SERVICE_NAME, secretKey, value);
   }
@@ -73,10 +82,12 @@ class KeytarSecretStore implements SecretStore {
 
 let cachedStore: SecretStore | null = null;
 
+/** Creates a stable secret key namespace for a profile API key. */
 function buildSecretKey(profile: string): string {
   return `${profile}:api-key`;
 }
 
+/** Loads keytar lazily and validates the minimal API surface we need. */
 async function loadOptionalKeytar(): Promise<KeytarLike | null> {
   try {
     const importer = new Function("specifier", "return import(specifier);") as (
@@ -100,6 +111,7 @@ async function loadOptionalKeytar(): Promise<KeytarLike | null> {
   return null;
 }
 
+/** Resolves and caches the preferred secret store, probing keychain support once. */
 async function getSecretStore(): Promise<SecretStore> {
   if (cachedStore) {
     return cachedStore;
@@ -123,6 +135,7 @@ async function getSecretStore(): Promise<SecretStore> {
   return cachedStore;
 }
 
+/** Runs a secret-store action with keychain-to-file fallback semantics. */
 async function withFallback<T>(
   action: (store: SecretStore) => Promise<T>
 ): Promise<{ value: T; backend: SecretBackend }> {
@@ -141,6 +154,7 @@ async function withFallback<T>(
   }
 }
 
+/** Persists the API key for one profile and reports the backend used. */
 export async function setProfileApiKey(
   profile: string,
   apiKey: string
@@ -151,6 +165,7 @@ export async function setProfileApiKey(
   return { backend: result.backend };
 }
 
+/** Reads the API key for one profile and reports the backend used. */
 export async function getProfileApiKey(
   profile: string
 ): Promise<{ apiKey: string | null; backend: SecretBackend }> {

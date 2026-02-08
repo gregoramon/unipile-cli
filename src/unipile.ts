@@ -6,6 +6,7 @@ import type {
   UnipileListResponse
 } from "./types.js";
 
+/** Rich API error wrapper that keeps HTTP status and provider payload fields. */
 export class UnipileApiError extends Error {
   public constructor(
     message: string,
@@ -45,10 +46,12 @@ export interface StartChatArgs {
   text?: string;
 }
 
+/** Removes a trailing slash from DSN-like base URLs. */
 function trimTrailingSlash(value: string): string {
   return value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
+/** Adds query parameters while skipping undefined values. */
 function withQuery(path: string, args: Record<string, string | number | boolean | undefined>): string {
   const searchParams = new URLSearchParams();
   for (const [key, value] of Object.entries(args)) {
@@ -61,6 +64,7 @@ function withQuery(path: string, args: Record<string, string | number | boolean 
   return query.length > 0 ? `${path}?${query}` : path;
 }
 
+/** Thin Unipile REST client for account, chat, message, and attendee operations. */
 export class UnipileClient {
   private readonly baseUrl: string;
 
@@ -68,6 +72,7 @@ export class UnipileClient {
     this.baseUrl = trimTrailingSlash(dsn);
   }
 
+  /** Performs an authenticated request and normalizes error payloads. */
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers ?? {});
     headers.set("X-API-KEY", this.apiKey);
@@ -110,6 +115,7 @@ export class UnipileClient {
     return payload as T;
   }
 
+  /** Lists connected accounts accessible by the configured API key. */
   public async listAccounts(args: ListArgs = {}): Promise<Account[]> {
     const response = await this.request<UnipileListResponse<Account>>(
       withQuery("/api/v1/accounts", {
@@ -121,6 +127,7 @@ export class UnipileClient {
     return response.items ?? [];
   }
 
+  /** Lists chat attendees for an account. */
   public async listAttendees(args: ListAttendeesArgs): Promise<ChatAttendee[]> {
     const response = await this.request<UnipileListResponse<ChatAttendee>>(
       withQuery("/api/v1/chat_attendees", {
@@ -133,6 +140,7 @@ export class UnipileClient {
     return response.items ?? [];
   }
 
+  /** Lists chats for an account. */
   public async listChats(args: ListChatsArgs): Promise<Chat[]> {
     const response = await this.request<UnipileListResponse<Chat>>(
       withQuery("/api/v1/chats", {
@@ -146,6 +154,7 @@ export class UnipileClient {
     return response.items ?? [];
   }
 
+  /** Lists messages across chats for an account. */
   public async listMessages(args: ListMessagesArgs): Promise<Message[]> {
     const response = await this.request<UnipileListResponse<Message>>(
       withQuery("/api/v1/messages", {
@@ -160,6 +169,7 @@ export class UnipileClient {
     return response.items ?? [];
   }
 
+  /** Lists messages within a specific chat thread. */
   public async listMessagesFromChat(chatId: string, args: ListMessagesArgs = {}): Promise<Message[]> {
     const response = await this.request<UnipileListResponse<Message>>(
       withQuery(`/api/v1/chats/${encodeURIComponent(chatId)}/messages`, {
@@ -173,6 +183,7 @@ export class UnipileClient {
     return response.items ?? [];
   }
 
+  /** Sends a message to an existing chat. */
   public async sendMessage(args: {
     chatId: string;
     text: string;
@@ -194,6 +205,7 @@ export class UnipileClient {
     );
   }
 
+  /** Starts a new chat and optionally sends the first message. */
   public async startChat(args: StartChatArgs): Promise<{
     object: string;
     chat_id: string | null;

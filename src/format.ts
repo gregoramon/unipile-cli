@@ -6,6 +6,7 @@ import type {
   QmdQueryResult
 } from "./types.js";
 
+/** Writes either JSON or text output depending on selected output mode. */
 export function printResult(
   output: OutputMode,
   payload: unknown,
@@ -19,6 +20,7 @@ export function printResult(
   console.log(textRenderer());
 }
 
+/** Formats account lists for human-readable terminal output. */
 export function formatAccounts(accounts: Account[]): string {
   if (accounts.length === 0) {
     return "No accounts found.";
@@ -32,6 +34,7 @@ export function formatAccounts(accounts: Account[]): string {
   return lines.join("\n");
 }
 
+/** Formats contact resolution details with scoring and QMD availability context. */
 export function formatResolution(resolution: ContactResolution, qmd: QmdQueryResult): string {
   const lines: string[] = [];
   lines.push(`Query: ${resolution.query}`);
@@ -63,6 +66,7 @@ export function formatResolution(resolution: ContactResolution, qmd: QmdQueryRes
   return lines.join("\n");
 }
 
+/** Formats message lists for human-readable terminal output. */
 export function formatMessages(messages: Message[]): string {
   if (messages.length === 0) {
     return "No messages found.";

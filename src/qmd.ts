@@ -11,6 +11,7 @@ export interface QmdQueryOptions {
   maxHits?: number;
 }
 
+/** Normalizes one arbitrary QMD result entry into the internal QmdHit shape. */
 function toHit(entry: unknown): QmdHit | null {
   if (!entry || typeof entry !== "object") {
     return null;
@@ -34,6 +35,7 @@ function toHit(entry: unknown): QmdHit | null {
   };
 }
 
+/** Extracts QMD hits from known response envelope variants. */
 function normalizeHits(payload: unknown): QmdHit[] {
   if (Array.isArray(payload)) {
     return payload.map(toHit).filter((hit): hit is QmdHit => hit !== null);
@@ -48,6 +50,7 @@ function normalizeHits(payload: unknown): QmdHit[] {
   return normalizeHits(list);
 }
 
+/** Executes `qmd query` and returns normalized, bounded hits or availability errors. */
 export async function queryQmd(query: string, options: QmdQueryOptions = {}): Promise<QmdQueryResult> {
   const command = options.command ?? "qmd";
   const collection = options.collection ?? "memory-root";
