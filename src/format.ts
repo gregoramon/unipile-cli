@@ -1,5 +1,6 @@
 import type {
   Account,
+  Chat,
   ContactResolution,
   Message,
   OutputMode,
@@ -76,6 +77,27 @@ export function formatMessages(messages: Message[]): string {
   for (const message of messages) {
     lines.push(
       `- ${message.timestamp ?? ""} chat=${message.chat_id} message=${message.id} sender=${message.sender_id} text=${message.text ?? ""}`
+    );
+  }
+
+  return lines.join("\n");
+}
+
+/** Formats chat lists and marks group-like chats for easier targeting. */
+export function formatChats(chats: Chat[]): string {
+  if (chats.length === 0) {
+    return "No chats found.";
+  }
+
+  const lines = ["Chats:"];
+  for (const chat of chats) {
+    const isGroup =
+      chat.account_type === "WHATSAPP"
+        ? chat.provider_id?.endsWith("@g.us") ?? false
+        : !chat.attendee_provider_id;
+    const label = isGroup ? "group" : "direct";
+    lines.push(
+      `- ${chat.id}  [${label}]  ${chat.name ?? "(no name)"}  unread=${chat.unread_count ?? 0}`
     );
   }
 

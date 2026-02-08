@@ -43,6 +43,8 @@ export interface Chat {
   id: string;
   account_id: string;
   account_type: string;
+  type?: number;
+  provider_id?: string;
   attendee_provider_id?: string;
   name?: string | null;
   timestamp?: string | null;

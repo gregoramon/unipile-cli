@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { getProfileConfig, loadConfig, saveConfig, upsertProfile } from "./config.js";
-import { printResult, formatAccounts, formatMessages, formatResolution } from "./format.js";
+import { printResult, formatAccounts, formatChats, formatMessages, formatResolution } from "./format.js";
 import { queryQmd } from "./qmd.js";
 import { resolveContacts } from "./resolver.js";
 import { getProfileApiKey, setProfileApiKey } from "./storage.js";
@@ -22,6 +22,7 @@ function help(): string {
     "  auth set --dsn <url> --api-key <key> [--profile <name>] [--qmd-collection <name>] [--qmd-command <bin>]",
     "  auth status",
     "  accounts list [--provider <WHATSAPP|INSTAGRAM|LINKEDIN|...>] [--limit <n>]",
+    "  chats list --account-id <id> [--query <text>] [--group-only] [--limit <n>]",
     "  contacts search --account-id <id> --query <text> [--limit <n>] [--max-candidates <n>] [--no-qmd]",
     "  contacts resolve --account-id <id> --query <text> [--threshold <0..1>] [--margin <0..1>] [--no-qmd]",
     "  send --account-id <id> --text <message> [--chat-id <id> | --attendee-id <id> | --to-query <text>] [--no-qmd]",
@@ -222,6 +223,26 @@ function resolveProviderFilter(
   };
 }
 
+/** Heuristic group detector across providers, with WhatsApp-specific precision. */
+function isGroupChat(chat: { account_type?: string; provider_id?: string; attendee_provider_id?: string; type?: number }): boolean {
+  if (chat.account_type === "WHATSAPP") {
+    if (chat.provider_id?.endsWith("@g.us")) {
+      return true;
+    }
+    if (chat.provider_id?.endsWith("@s.whatsapp.net")) {
+      return false;
+    }
+    if (chat.type === 1) {
+      return true;
+    }
+    if (chat.type === 0) {
+      return false;
+    }
+  }
+
+  return !chat.attendee_provider_id;
+}
+
 /** Async sleep helper used by polling commands. */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -237,6 +258,20 @@ function toEpochMillis(value: string | null | undefined): number | null {
 
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? null : parsed;
+}
+
+/** Converts a phone-like token to WhatsApp attendee provider id format. */
+function toWhatsAppProviderId(input: string | undefined): string | null {
+  if (!input) {
+    return null;
+  }
+
+  const digits = input.replace(/[^0-9]/g, "");
+  if (digits.length < 8) {
+    return null;
+  }
+
+  return `${digits}@s.whatsapp.net`;
 }
 
 /** Builds an authenticated Unipile client for the selected profile. */
@@ -374,6 +409,45 @@ async function commandAccountsList(args: string[], global: GlobalCliOptions): Pr
   return 0;
 }
 
+/** Lists chats and supports group-only and name query filtering. */
+async function commandChatsList(args: string[], global: GlobalCliOptions): Promise<number> {
+  const flags = parseFlags(args);
+  const accountId = requireString(flags, "account-id");
+  const query = getString(flags, "query")?.trim().toLowerCase();
+  const groupOnly = Boolean(flags.get("group-only"));
+  const limit = getNumber(flags, "limit") ?? 250;
+
+  const { client } = await buildClient(global);
+  const chats = await client.listChats({ accountId, limit });
+
+  const filtered = chats.filter((chat) => {
+    const isGroup = isGroupChat(chat);
+    if (groupOnly && !isGroup) {
+      return false;
+    }
+    if (!query || query.length === 0) {
+      return true;
+    }
+
+    const haystack = `${chat.name ?? ""} ${chat.id}`.toLowerCase();
+    return haystack.includes(query);
+  });
+
+  const payload = {
+    account_id: accountId,
+    count: filtered.length,
+    query: query ?? null,
+    group_only: groupOnly,
+    chats: filtered.map((chat) => ({
+      ...chat,
+      is_group: isGroupChat(chat)
+    }))
+  };
+
+  printResult(global.output, payload, () => formatChats(filtered));
+  return 0;
+}
+
 /** Fetches attendees and chats used by contact resolution and send flows. */
 async function fetchResolutionContext(
   client: UnipileClient,
@@ -465,6 +539,35 @@ async function commandSend(args: string[], global: GlobalCliOptions): Promise<nu
     });
 
     return 0;
+  }
+
+  const whatsappProviderId = toWhatsAppProviderId(toQuery);
+  if (toQuery && whatsappProviderId) {
+    try {
+      const started = await client.startChat({
+        accountId,
+        attendeesIds: [whatsappProviderId],
+        text
+      });
+
+      const payload = {
+        status: "sent",
+        mode: "new_chat_whatsapp_phone",
+        account_id: accountId,
+        target_phone: toQuery,
+        target_provider_id: whatsappProviderId,
+        chat_id: started.chat_id,
+        message_id: started.message_id
+      };
+
+      printResult(global.output, payload, () => {
+        return `Sent message to ${toQuery} via direct WhatsApp phone routing.`;
+      });
+
+      return 0;
+    } catch {
+      // Fall through to generic resolver flow if direct phone routing fails.
+    }
   }
 
   const context = await fetchResolutionContext(client, accountId, 250);
@@ -889,6 +992,10 @@ async function run(): Promise<number> {
 
   if (group === "accounts" && action === "list") {
     return commandAccountsList(args, global);
+  }
+
+  if (group === "chats" && action === "list") {
+    return commandChatsList(args, global);
   }
 
   if (group === "contacts" && action === "search") {
