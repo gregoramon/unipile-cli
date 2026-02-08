@@ -37,8 +37,8 @@ unipile accounts list
 unipile contacts search --account-id <ACCOUNT_ID> --query "john sales"
 unipile contacts resolve --account-id <ACCOUNT_ID> --query "john sales"
 unipile send --account-id <ACCOUNT_ID> --to-query "john sales" --text "Hello"
-unipile inbox pull --account-id <ACCOUNT_ID> --since 2026-02-08T00:00:00Z
-unipile inbox watch --account-id <ACCOUNT_ID> --interval-seconds 20
+unipile inbox pull --account-id <ACCOUNT_ID> --chat-id <CHAT_ID> --non-interactive
+unipile inbox watch --account-id <ACCOUNT_ID> --chat-id <CHAT_ID> --interval-seconds 20 --max-iterations 3 --non-interactive
 unipile doctor run --account-id <ACCOUNT_ID>
 ```
 
@@ -54,8 +54,11 @@ Use `--output json` only when deterministic field parsing is needed in toolchain
 `inbox watch` is poll-based and headless-safe:
 
 - emits newly seen messages per poll
+- supports scoped polling with `--chat-id` and/or `--sender-id`
+- persists cursor + dedupe state in local sqlite by default
 - supports `--once` for one-shot checks
 - supports `--max-iterations <n>` for bounded runs
+- supports `--no-state` for stateless one-off polling
 
 `doctor run` is the end-to-end readiness check:
 
@@ -63,6 +66,30 @@ Use `--output json` only when deterministic field parsing is needed in toolchain
 - validates `/api/v1/accounts` access
 - optionally validates attendee/chat endpoints for a specific account
 - validates QMD query path (warns if unavailable, does not hard-fail MVP)
+
+## Stateful inbox storage
+
+Inbound polling stores state locally to avoid duplicate reprocessing:
+
+- sqlite database: `~/.config/unipile-cli/inbox.db`
+- stores:
+  - per-scope cursor (`since`) for incremental pulls
+  - per-scope seen message ids for idempotent watch loops
+  - full message payload JSON for historical context/debugging
+
+Scope keys are built from profile + account + chat/sender filters and are provider-agnostic.
+This applies to all connected Unipile messaging providers (including WhatsApp, Instagram, and LinkedIn) because polling uses shared messaging endpoints.
+
+Useful flags:
+
+```bash
+--chat-id <CHAT_ID[,CHAT_ID2]>
+--sender-id <SENDER_ID>
+--state-key <CUSTOM_SCOPE_NAME>
+--reset-state
+--no-state
+--max-pages <N>
+```
 
 ## Optional QMD integration
 

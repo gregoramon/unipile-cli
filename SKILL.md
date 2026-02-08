@@ -39,13 +39,13 @@ unipile send --account-id <ACCOUNT_ID> --to-query "<person>" --text "<message>" 
 4. Pull inbox updates.
 
 ```bash
-unipile inbox pull --account-id <ACCOUNT_ID> --since <ISO8601> --non-interactive
+unipile inbox pull --account-id <ACCOUNT_ID> --chat-id <CHAT_ID> --non-interactive
 ```
 
 5. Watch inbox in bounded headless polling mode when needed.
 
 ```bash
-unipile inbox watch --account-id <ACCOUNT_ID> --interval-seconds 20 --max-iterations 3 --non-interactive
+unipile inbox watch --account-id <ACCOUNT_ID> --chat-id <CHAT_ID> --interval-seconds 20 --max-iterations 3 --non-interactive
 ```
 
 ## Behavior Rules
@@ -56,6 +56,9 @@ unipile inbox watch --account-id <ACCOUNT_ID> --interval-seconds 20 --max-iterat
 - Use `--output json` only for deterministic field-level parsing.
 - Prefer `--no-qmd` for deterministic fallback behavior when remote QMD is unavailable.
 - Use `doctor run` before automated sessions to detect broken auth or account mismatches early.
+- Prefer scoped inbox polling (`--chat-id` or `--sender-id`) instead of account-wide watch in high-volume accounts.
+- Keep sqlite state enabled by default for inbox commands to avoid duplicate emits across runs.
+- Use `--reset-state` only when intentionally replaying older messages.
 
 ## QMD Usage
 
