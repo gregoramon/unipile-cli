@@ -24,9 +24,11 @@ npm link
 ## Auth setup
 
 ```bash
-unipile auth set --dsn https://api1.unipile.com:13111 --api-key <YOUR_KEY>
+unipile auth set --dsn <YOUR_UNIPILE_DSN> --api-key <YOUR_KEY>
 unipile auth status
 ```
+
+Get `<YOUR_UNIPILE_DSN>` from your Unipile dashboard/API settings. Do not assume a fixed host/port.
 
 ## Core commands
 
@@ -74,7 +76,7 @@ Configure defaults per profile in `auth set`:
 
 ```bash
 unipile auth set \
-  --dsn https://api1.unipile.com:13111 \
+  --dsn <YOUR_UNIPILE_DSN> \
   --api-key <YOUR_KEY> \
   --qmd-command qmd \
   --qmd-collection memory-root
@@ -87,7 +89,7 @@ export UNIPILE_QMD_SSH_TARGET=user@mac-mini.local
 export UNIPILE_QMD_SSH_OPTS="-i ~/.ssh/id_ed25519"
 
 unipile auth set \
-  --dsn https://api1.unipile.com:13111 \
+  --dsn <YOUR_UNIPILE_DSN> \
   --api-key <YOUR_KEY> \
   --qmd-command /Users/gregoramon/coding/unipile/scripts/qmd-ssh-proxy.sh \
   --qmd-collection memory-root
