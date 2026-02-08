@@ -46,6 +46,7 @@ export interface Chat {
   type?: number;
   provider_id?: string;
   attendee_provider_id?: string;
+  is_group?: boolean;
   name?: string | null;
   timestamp?: string | null;
   unread_count?: number;

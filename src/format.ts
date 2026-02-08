@@ -6,6 +6,7 @@ import type {
   OutputMode,
   QmdQueryResult
 } from "./types.js";
+import { isGroupChat } from "./provider.js";
 
 /** Writes either JSON or text output depending on selected output mode. */
 export function printResult(
@@ -91,10 +92,7 @@ export function formatChats(chats: Chat[]): string {
 
   const lines = ["Chats:"];
   for (const chat of chats) {
-    const isGroup =
-      chat.account_type === "WHATSAPP"
-        ? chat.provider_id?.endsWith("@g.us") ?? false
-        : !chat.attendee_provider_id;
+    const isGroup = isGroupChat(chat);
     const label = isGroup ? "group" : "direct";
     lines.push(
       `- ${chat.id}  [${label}]  ${chat.name ?? "(no name)"}  unread=${chat.unread_count ?? 0}`

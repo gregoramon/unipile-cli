@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { getProfileConfig, loadConfig, saveConfig, upsertProfile } from "./config.js";
 import { printResult, formatAccounts, formatChats, formatMessages, formatResolution } from "./format.js";
+import { isGroupChat, normalizeProviderToken, resolveProviderFilter } from "./provider.js";
 import { queryQmd } from "./qmd.js";
 import { resolveContacts } from "./resolver.js";
 import { getProfileApiKey, setProfileApiKey } from "./storage.js";
@@ -146,115 +147,6 @@ function parsePathList(value: string | undefined): string[] {
     .filter((entry) => entry.length > 0);
 }
 
-/** Normalizes provider tokens for matching regardless of case or punctuation. */
-function normalizeProviderToken(value: string): string {
-  return value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
-}
-
-/** Computes Levenshtein distance for typo-tolerant provider matching. */
-function levenshteinDistance(left: string, right: string): number {
-  if (left === right) {
-    return 0;
-  }
-  if (left.length === 0) {
-    return right.length;
-  }
-  if (right.length === 0) {
-    return left.length;
-  }
-
-  const previous = new Array<number>(right.length + 1);
-  const current = new Array<number>(right.length + 1);
-
-  for (let j = 0; j <= right.length; j += 1) {
-    previous[j] = j;
-  }
-
-  for (let i = 1; i <= left.length; i += 1) {
-    current[0] = i;
-    for (let j = 1; j <= right.length; j += 1) {
-      const substitutionCost = left[i - 1] === right[j - 1] ? 0 : 1;
-      current[j] = Math.min(
-        previous[j] + 1,
-        current[j - 1] + 1,
-        previous[j - 1] + substitutionCost
-      );
-    }
-    for (let j = 0; j <= right.length; j += 1) {
-      previous[j] = current[j];
-    }
-  }
-
-  return previous[right.length];
-}
-
-/** Resolves provider filters with case-insensitive and close-typo tolerance. */
-function resolveProviderFilter(
-  input: string,
-  availableProviderTypes: string[]
-): { requested: string; resolved?: string; hint?: string } {
-  const requested = normalizeProviderToken(input);
-  if (requested.length === 0) {
-    return { requested };
-  }
-
-  const candidates = Array.from(
-    new Set(
-      availableProviderTypes
-        .map((type) => normalizeProviderToken(type))
-        .filter((type) => type.length > 0)
-    )
-  );
-
-  if (candidates.includes(requested)) {
-    return { requested, resolved: requested };
-  }
-
-  let best: { provider: string; distance: number } | null = null;
-  for (const provider of candidates) {
-    const distance = levenshteinDistance(requested, provider);
-    if (best === null || distance < best.distance) {
-      best = { provider, distance };
-    }
-  }
-
-  if (best && best.distance <= 2) {
-    return {
-      requested,
-      resolved: best.provider,
-      hint: `Provider "${input}" interpreted as "${best.provider}".`
-    };
-  }
-
-  return {
-    requested,
-    hint:
-      candidates.length > 0
-        ? `Unknown provider "${input}". Available types: ${candidates.join(", ")}`
-        : `Unknown provider "${input}".`
-  };
-}
-
-/** Heuristic group detector across providers, with WhatsApp-specific precision. */
-function isGroupChat(chat: { account_type?: string; provider_id?: string; attendee_provider_id?: string; type?: number }): boolean {
-  if (chat.account_type === "WHATSAPP") {
-    if (chat.provider_id?.endsWith("@g.us")) {
-      return true;
-    }
-    if (chat.provider_id?.endsWith("@s.whatsapp.net")) {
-      return false;
-    }
-    if (chat.type === 1) {
-      return true;
-    }
-    if (chat.type === 0) {
-      return false;
-    }
-  }
-
-  return !chat.attendee_provider_id;
-}
-
 /** Async sleep helper used by polling commands. */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -396,7 +288,7 @@ async function commandAccountsList(args: string[], global: GlobalCliOptions): Pr
     : undefined;
 
   const filtered = resolvedProvider?.resolved
-    ? accounts.filter((account) => normalizeProviderToken(account.type) === resolvedProvider.resolved)
+    ? accounts.filter((account) => account.type === resolvedProvider.resolved)
     : providerInput
       ? []
       : accounts;
