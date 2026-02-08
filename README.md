@@ -24,9 +24,11 @@ npm link
 ## Auth setup
 
 ```bash
-unipile auth set --dsn https://api1.unipile.com:13111 --api-key <YOUR_KEY>
+unipile auth set --dsn <YOUR_UNIPILE_DSN> --api-key <YOUR_KEY>
 unipile auth status
 ```
+
+Get `<YOUR_UNIPILE_DSN>` from your Unipile dashboard/API settings. Do not assume a fixed host/port.
 
 ## Core commands
 
@@ -36,6 +38,8 @@ unipile contacts search --account-id <ACCOUNT_ID> --query "john sales"
 unipile contacts resolve --account-id <ACCOUNT_ID> --query "john sales"
 unipile send --account-id <ACCOUNT_ID> --to-query "john sales" --text "Hello"
 unipile inbox pull --account-id <ACCOUNT_ID> --since 2026-02-08T00:00:00Z
+unipile inbox watch --account-id <ACCOUNT_ID> --interval-seconds 20
+unipile doctor run --account-id <ACCOUNT_ID>
 ```
 
 ## Automation behavior
@@ -46,6 +50,19 @@ Use `--non-interactive` to force prompt-free behavior.
 - If resolution is ambiguous or not found, `send` exits with code `2` and returns candidate details.
 
 Use `--output json` only when deterministic field parsing is needed in toolchains.
+
+`inbox watch` is poll-based and headless-safe:
+
+- emits newly seen messages per poll
+- supports `--once` for one-shot checks
+- supports `--max-iterations <n>` for bounded runs
+
+`doctor run` is the end-to-end readiness check:
+
+- validates DSN + API key availability
+- validates `/api/v1/accounts` access
+- optionally validates attendee/chat endpoints for a specific account
+- validates QMD query path (warns if unavailable, does not hard-fail MVP)
 
 ## Optional QMD integration
 
@@ -59,7 +76,7 @@ Configure defaults per profile in `auth set`:
 
 ```bash
 unipile auth set \
-  --dsn https://api1.unipile.com:13111 \
+  --dsn <YOUR_UNIPILE_DSN> \
   --api-key <YOUR_KEY> \
   --qmd-command qmd \
   --qmd-collection memory-root
@@ -72,7 +89,7 @@ export UNIPILE_QMD_SSH_TARGET=user@mac-mini.local
 export UNIPILE_QMD_SSH_OPTS="-i ~/.ssh/id_ed25519"
 
 unipile auth set \
-  --dsn https://api1.unipile.com:13111 \
+  --dsn <YOUR_UNIPILE_DSN> \
   --api-key <YOUR_KEY> \
   --qmd-command /Users/gregoramon/coding/unipile/scripts/qmd-ssh-proxy.sh \
   --qmd-collection memory-root

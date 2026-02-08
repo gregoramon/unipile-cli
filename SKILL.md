@@ -20,6 +20,7 @@ Use this skill to operate `unipile` commands safely in user or automation contex
 
 ```bash
 unipile auth status
+unipile doctor run
 unipile accounts list
 ```
 
@@ -41,6 +42,12 @@ unipile send --account-id <ACCOUNT_ID> --to-query "<person>" --text "<message>" 
 unipile inbox pull --account-id <ACCOUNT_ID> --since <ISO8601> --non-interactive
 ```
 
+5. Watch inbox in bounded headless polling mode when needed.
+
+```bash
+unipile inbox watch --account-id <ACCOUNT_ID> --interval-seconds 20 --max-iterations 3 --non-interactive
+```
+
 ## Behavior Rules
 
 - Prefer `--non-interactive` in agent contexts.
@@ -48,6 +55,7 @@ unipile inbox pull --account-id <ACCOUNT_ID> --since <ISO8601> --non-interactive
 - Retry `send` with `--attendee-id` when query-based resolution is ambiguous.
 - Use `--output json` only for deterministic field-level parsing.
 - Prefer `--no-qmd` for deterministic fallback behavior when remote QMD is unavailable.
+- Use `doctor run` before automated sessions to detect broken auth or account mismatches early.
 
 ## QMD Usage
 
