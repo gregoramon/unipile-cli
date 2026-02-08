@@ -6,14 +6,17 @@ import type { AppConfig, ProfileConfig } from "./types.js";
 const CONFIG_DIR_ENV = "UNIPILE_CLI_CONFIG_DIR";
 const CONFIG_FILE = "config.json";
 
+/** Resolves the directory where CLI config and secrets are stored. */
 export function getConfigDir(): string {
   return process.env[CONFIG_DIR_ENV] ?? join(homedir(), ".config", "unipile-cli");
 }
 
+/** Resolves the absolute path to the CLI configuration file. */
 export function getConfigPath(): string {
   return join(getConfigDir(), CONFIG_FILE);
 }
 
+/** Returns default profile configuration used when no persisted config exists. */
 export function getDefaultConfig(): AppConfig {
   return {
     profile: "default",
@@ -29,10 +32,12 @@ export function getDefaultConfig(): AppConfig {
   };
 }
 
+/** Creates the config directory with restrictive permissions when missing. */
 export async function ensureConfigDir(): Promise<void> {
   await fs.mkdir(getConfigDir(), { recursive: true, mode: 0o700 });
 }
 
+/** Loads config from disk and merges it with defaults for backward compatibility. */
 export async function loadConfig(): Promise<AppConfig> {
   const path = getConfigPath();
   try {
@@ -52,6 +57,7 @@ export async function loadConfig(): Promise<AppConfig> {
   }
 }
 
+/** Persists the full config payload to disk with restrictive file permissions. */
 export async function saveConfig(config: AppConfig): Promise<void> {
   await ensureConfigDir();
   await fs.writeFile(getConfigPath(), `${JSON.stringify(config, null, 2)}\n`, {
@@ -59,6 +65,7 @@ export async function saveConfig(config: AppConfig): Promise<void> {
   });
 }
 
+/** Returns an existing profile config or throws a setup-oriented error. */
 export function getProfileConfig(config: AppConfig, profileName: string): ProfileConfig {
   const profile = config.profiles[profileName];
   if (!profile) {
@@ -69,6 +76,7 @@ export function getProfileConfig(config: AppConfig, profileName: string): Profil
   return profile;
 }
 
+/** Inserts or updates a profile while preserving existing profile values. */
 export function upsertProfile(
   config: AppConfig,
   profileName: string,

@@ -10,6 +10,7 @@ const DEFAULT_THRESHOLD = 0.9;
 const DEFAULT_MARGIN = 0.15;
 const DEFAULT_MAX_CANDIDATES = 5;
 
+/** Normalizes strings for fuzzy matching across user input and provider data. */
 function normalize(value: string): string {
   return value
     .toLowerCase()
@@ -19,11 +20,13 @@ function normalize(value: string): string {
     .trim();
 }
 
+/** Tokenizes normalized strings for overlap-based lexical scoring. */
 function tokenize(value: string): string[] {
   const cleaned = normalize(value);
   return cleaned.length > 0 ? cleaned.split(" ") : [];
 }
 
+/** Computes lexical relevance score and match reasons for a single attendee. */
 function lexicalScore(query: string, attendee: ChatAttendee): { score: number; matchedBy: string[] } {
   const matchedBy: string[] = [];
   const queryNorm = normalize(query);
@@ -77,6 +80,7 @@ function lexicalScore(query: string, attendee: ChatAttendee): { score: number; m
   return { score: overlapScore * 0.88, matchedBy };
 }
 
+/** Builds recency scores per attendee provider id from chat timestamps. */
 function buildRecencyScoreByProviderId(chats: Chat[]): Map<string, number> {
   const rawMap = new Map<string, number>();
 
@@ -118,6 +122,7 @@ function buildRecencyScoreByProviderId(chats: Chat[]): Map<string, number> {
   return normalized;
 }
 
+/** Computes a light semantic boost from QMD query hits. */
 function qmdBoost(attendee: ChatAttendee, qmdResult: QmdQueryResult): number {
   if (!qmdResult.available || qmdResult.hits.length === 0) {
     return 0;
@@ -152,6 +157,7 @@ function qmdBoost(attendee: ChatAttendee, qmdResult: QmdQueryResult): number {
   return best;
 }
 
+/** Produces ranked contact candidates with lexical, recency, and QMD components. */
 export function rankContacts(
   query: string,
   attendees: ChatAttendee[],
@@ -190,6 +196,7 @@ export function rankContacts(
   return ranked;
 }
 
+/** Resolves a query to one contact or returns ambiguous/not_found with candidates. */
 export function resolveContacts(
   query: string,
   attendees: ChatAttendee[],
