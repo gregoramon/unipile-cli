@@ -40,6 +40,7 @@ export interface ListMessagesArgs extends ListArgs {
   accountId?: string;
   after?: string;
   before?: string;
+  senderId?: string;
 }
 
 export interface StartChatArgs {
@@ -161,30 +162,45 @@ export class UnipileClient {
   }
 
   /** Lists messages across chats for an account. */
-  public async listMessages(args: ListMessagesArgs): Promise<Message[]> {
-    const response = await this.request<UnipileListResponse<Message>>(
+  public async listMessagesPage(args: ListMessagesArgs): Promise<UnipileListResponse<Message>> {
+    return this.request<UnipileListResponse<Message>>(
       withQuery("/api/v1/messages", {
         limit: args.limit,
         cursor: args.cursor,
         account_id: args.accountId,
         after: args.after,
-        before: args.before
+        before: args.before,
+        sender_id: args.senderId
       })
     );
+  }
+
+  /** Lists messages across chats for an account. */
+  public async listMessages(args: ListMessagesArgs): Promise<Message[]> {
+    const response = await this.listMessagesPage(args);
 
     return response.items ?? [];
   }
 
   /** Lists messages within a specific chat thread. */
-  public async listMessagesFromChat(chatId: string, args: ListMessagesArgs = {}): Promise<Message[]> {
-    const response = await this.request<UnipileListResponse<Message>>(
+  public async listMessagesFromChatPage(
+    chatId: string,
+    args: ListMessagesArgs = {}
+  ): Promise<UnipileListResponse<Message>> {
+    return this.request<UnipileListResponse<Message>>(
       withQuery(`/api/v1/chats/${encodeURIComponent(chatId)}/messages`, {
         limit: args.limit,
         cursor: args.cursor,
         after: args.after,
-        before: args.before
+        before: args.before,
+        sender_id: args.senderId
       })
     );
+  }
+
+  /** Lists messages within a specific chat thread. */
+  public async listMessagesFromChat(chatId: string, args: ListMessagesArgs = {}): Promise<Message[]> {
+    const response = await this.listMessagesFromChatPage(chatId, args);
 
     return response.items ?? [];
   }

@@ -1,11 +1,19 @@
 #!/usr/bin/env node
 import { getProfileConfig, loadConfig, saveConfig, upsertProfile } from "./config.js";
 import { printResult, formatAccounts, formatChats, formatMessages, formatResolution } from "./format.js";
-import { isGroupChat, normalizeProviderToken, resolveProviderFilter } from "./provider.js";
+import {
+  buildInboxScopeKey,
+  computeNextSinceCursor,
+  createInboxStateStore,
+  getInboxStatePath,
+  normalizeChatIds
+} from "./inbox-state.js";
+import type { InboxStateStore } from "./inbox-state.js";
+import { isGroupChat, resolveProviderFilter } from "./provider.js";
 import { queryQmd } from "./qmd.js";
 import { resolveContacts } from "./resolver.js";
 import { getProfileApiKey, setProfileApiKey } from "./storage.js";
-import type { AppConfig, ChatAttendee, GlobalCliOptions, OutputMode } from "./types.js";
+import type { AppConfig, ChatAttendee, GlobalCliOptions, Message, OutputMode } from "./types.js";
 import { UnipileApiError, UnipileClient } from "./unipile.js";
 
 /** Renders CLI usage text. */
@@ -27,8 +35,8 @@ function help(): string {
     "  contacts search --account-id <id> --query <text> [--limit <n>] [--max-candidates <n>] [--no-qmd]",
     "  contacts resolve --account-id <id> --query <text> [--threshold <0..1>] [--margin <0..1>] [--no-qmd]",
     "  send --account-id <id> --text <message> [--chat-id <id> | --attendee-id <id> | --to-query <text>] [--attachment <paths>] [--voice-note <file>] [--video <file>] [--typing-duration <ms>] [--no-qmd]",
-    "  inbox pull --account-id <id> [--since <ISO8601>] [--limit <n>]",
-    "  inbox watch --account-id <id> [--since <ISO8601>] [--limit <n>] [--interval-seconds <n>] [--max-iterations <n>] [--once]",
+    "  inbox pull --account-id <id> [--chat-id <id[,id2]>] [--sender-id <id>] [--since <ISO8601>] [--limit <n>] [--max-pages <n>] [--state-key <name>] [--reset-state] [--no-state]",
+    "  inbox watch --account-id <id> [--chat-id <id[,id2]>] [--sender-id <id>] [--since <ISO8601>] [--limit <n>] [--max-pages <n>] [--interval-seconds <n>] [--max-iterations <n>] [--once] [--state-key <name>] [--reset-state] [--no-state]",
     "  doctor run [--account-id <id>] [--qmd-query <text>] [--skip-qmd]",
     "",
     "Notes:",
@@ -126,6 +134,23 @@ function getNumber(flags: Map<string, string | boolean>, key: string): number | 
   return parsed;
 }
 
+/** Reads and validates a positive integer flag with optional bounds. */
+function getPositiveInteger(
+  flags: Map<string, string | boolean>,
+  key: string,
+  fallback: number,
+  bounds: { max?: number } = {}
+): number {
+  const parsed = getNumber(flags, key) ?? fallback;
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`Flag --${key} expects a positive integer.`);
+  }
+  if (bounds.max !== undefined && parsed > bounds.max) {
+    throw new Error(`Flag --${key} must be <= ${bounds.max}.`);
+  }
+  return parsed;
+}
+
 /** Reads a required string flag or throws a user-facing error. */
 function requireString(flags: Map<string, string | boolean>, key: string): string {
   const value = getString(flags, key);
@@ -135,8 +160,8 @@ function requireString(flags: Map<string, string | boolean>, key: string): strin
   return value;
 }
 
-/** Parses comma-separated file path lists from a flag value. */
-function parsePathList(value: string | undefined): string[] {
+/** Parses comma-separated string lists from a flag value. */
+function parseCsvList(value: string | undefined): string[] {
   if (!value) {
     return [];
   }
@@ -145,6 +170,11 @@ function parsePathList(value: string | undefined): string[] {
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+}
+
+/** Parses comma-separated file path lists from a flag value. */
+function parsePathList(value: string | undefined): string[] {
+  return parseCsvList(value);
 }
 
 /** Async sleep helper used by polling commands. */
@@ -633,127 +663,436 @@ async function commandSend(args: string[], global: GlobalCliOptions): Promise<nu
   return 0;
 }
 
-/** Pulls messages with optional lower-bound timestamp filtering. */
+interface InboxQueryScope {
+  chatIds: string[];
+  senderId?: string;
+}
+
+interface InboxStateOptions {
+  useState: boolean;
+  resetState: boolean;
+  customStateKey?: string;
+}
+
+/** Parses inbox scope filters from command flags. */
+function parseInboxQueryScope(flags: Map<string, string | boolean>): InboxQueryScope {
+  const chatIds = normalizeChatIds(parseCsvList(getString(flags, "chat-id")));
+  const sender = getString(flags, "sender-id")?.trim();
+  return {
+    chatIds,
+    senderId: sender && sender.length > 0 ? sender : undefined
+  };
+}
+
+/** Parses state-related inbox flags. */
+function parseInboxStateOptions(flags: Map<string, string | boolean>): InboxStateOptions {
+  const customStateKey = getString(flags, "state-key")?.trim();
+  return {
+    useState: !Boolean(flags.get("no-state")),
+    resetState: Boolean(flags.get("reset-state")),
+    customStateKey:
+      customStateKey && customStateKey.length > 0 ? customStateKey : undefined
+  };
+}
+
+/** Builds a stable dedupe key for one message row. */
+function toMessageKey(message: Message): string {
+  return `${message.account_id}:${message.id}`;
+}
+
+/** Returns messages sorted from oldest to newest with id tie-breakers. */
+function sortMessagesChronologically(messages: Message[]): Message[] {
+  return [...messages].sort((left, right) => {
+    const leftTs = toEpochMillis(left.timestamp) ?? 0;
+    const rightTs = toEpochMillis(right.timestamp) ?? 0;
+    if (leftTs !== rightTs) {
+      return leftTs - rightTs;
+    }
+    return left.id.localeCompare(right.id);
+  });
+}
+
+/** Deduplicates message arrays by account/message id pair. */
+function dedupeMessages(messages: Message[]): Message[] {
+  const seen = new Set<string>();
+  const deduped: Message[] = [];
+  for (const message of messages) {
+    const key = toMessageKey(message);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(message);
+  }
+  return deduped;
+}
+
+/** Collects paginated message responses until cursor exhaustion or max pages. */
+async function collectPagedMessages(
+  fetchPage: (cursor: string | undefined) => Promise<{ items: Message[]; cursor?: string | null }>,
+  maxPages: number
+): Promise<Message[]> {
+  const collected: Message[] = [];
+  let cursor: string | undefined;
+  const seenCursors = new Set<string>();
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const response = await fetchPage(cursor);
+    collected.push(...(response.items ?? []));
+
+    const nextCursor = response.cursor;
+    if (typeof nextCursor !== "string") {
+      break;
+    }
+
+    if (nextCursor.trim().length === 0 || seenCursors.has(nextCursor)) {
+      break;
+    }
+
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
+  }
+
+  return collected;
+}
+
+/** Fetches messages for account-wide or chat-scoped polling with pagination. */
+async function fetchScopedMessages(args: {
+  client: UnipileClient;
+  accountId: string;
+  scope: InboxQueryScope;
+  since?: string;
+  limit: number;
+  maxPages: number;
+}): Promise<Message[]> {
+  const { client, accountId, scope, since, limit, maxPages } = args;
+
+  if (scope.chatIds.length === 0) {
+    const accountMessages = await collectPagedMessages(
+      (cursor) =>
+        client.listMessagesPage({
+          accountId,
+          senderId: scope.senderId,
+          after: since,
+          cursor,
+          limit
+        }),
+      maxPages
+    );
+    return dedupeMessages(accountMessages);
+  }
+
+  const scoped: Message[] = [];
+  for (const chatId of scope.chatIds) {
+    const chatMessages = await collectPagedMessages(
+      (cursor) =>
+        client.listMessagesFromChatPage(chatId, {
+          senderId: scope.senderId,
+          after: since,
+          cursor,
+          limit
+        }),
+      maxPages
+    );
+    scoped.push(...chatMessages);
+  }
+
+  return dedupeMessages(scoped);
+}
+
+/** Pulls new messages and persists scope cursor/message payload state by default. */
 async function commandInboxPull(args: string[], global: GlobalCliOptions): Promise<number> {
   const flags = parseFlags(args);
   const accountId = requireString(flags, "account-id");
-  const limit = getNumber(flags, "limit") ?? 100;
-  const since = getString(flags, "since");
+  const limit = getPositiveInteger(flags, "limit", 100, { max: 250 });
+  const maxPages = getPositiveInteger(flags, "max-pages", 10);
+  const scope = parseInboxQueryScope(flags);
+  const stateOptions = parseInboxStateOptions(flags);
+  const explicitSince = getString(flags, "since");
 
-  const { client } = await buildClient(global);
-  const messages = await client.listMessages({
-    accountId,
-    after: since,
-    limit
-  });
+  const { client, profileName } = await buildClient(global);
+  let stateStore: InboxStateStore | null = null;
 
-  const payload = {
-    account_id: accountId,
-    count: messages.length,
-    messages
-  };
+  try {
+    let scopeKey: string | undefined;
+    let sinceCursor = explicitSince;
+    let usedStoredCursor = false;
 
-  printResult(global.output, payload, () => formatMessages(messages));
-  return 0;
+    if (stateOptions.useState) {
+      stateStore = await createInboxStateStore();
+      scopeKey = buildInboxScopeKey({
+        profileName,
+        accountId,
+        chatIds: scope.chatIds,
+        senderId: scope.senderId,
+        customStateKey: stateOptions.customStateKey
+      });
+
+      if (stateOptions.resetState) {
+        stateStore.resetScope(scopeKey);
+      }
+
+      if (!sinceCursor) {
+        const stored = stateStore.getCursor(scopeKey);
+        if (stored) {
+          sinceCursor = stored;
+          usedStoredCursor = true;
+        }
+      }
+    }
+
+    const batch = await fetchScopedMessages({
+      client,
+      accountId,
+      scope,
+      since: sinceCursor,
+      limit,
+      maxPages
+    });
+
+    const sorted = sortMessagesChronologically(batch);
+    let returnedMessages = sorted;
+    let newStoreRows = 0;
+    let newScopeRows = 0;
+
+    const nextSince = computeNextSinceCursor(
+      sinceCursor,
+      sorted.map((message) => message.timestamp)
+    );
+
+    if (stateStore && scopeKey) {
+      returnedMessages = [];
+      for (const message of sorted) {
+        const persisted = stateStore.persistMessage(scopeKey, message);
+        if (persisted.isNewInStore) {
+          newStoreRows += 1;
+        }
+        if (persisted.isNewForScope) {
+          newScopeRows += 1;
+          returnedMessages.push(message);
+        }
+      }
+
+      stateStore.upsertScopeState({
+        scopeKey,
+        profileName,
+        accountId,
+        chatIds: scope.chatIds,
+        senderId: scope.senderId,
+        sinceCursor: nextSince
+      });
+    }
+
+    const payload = {
+      mode: "pull",
+      account_id: accountId,
+      scope: {
+        chat_ids: scope.chatIds,
+        sender_id: scope.senderId ?? null
+      },
+      count: returnedMessages.length,
+      messages: returnedMessages,
+      state: {
+        enabled: stateOptions.useState,
+        db_path: stateOptions.useState ? getInboxStatePath() : null,
+        scope_key: stateOptions.useState
+          ? buildInboxScopeKey({
+              profileName,
+              accountId,
+              chatIds: scope.chatIds,
+              senderId: scope.senderId,
+              customStateKey: stateOptions.customStateKey
+            })
+          : null,
+        used_stored_cursor: usedStoredCursor,
+        explicit_since: explicitSince ?? null,
+        last_since_cursor: nextSince ?? null,
+        new_store_rows: newStoreRows,
+        new_scope_rows: newScopeRows
+      }
+    };
+
+    printResult(global.output, payload, () => formatMessages(returnedMessages));
+    return 0;
+  } finally {
+    stateStore?.close();
+  }
 }
 
-/** Polls inbox messages at a fixed interval for headless watch workflows. */
+/** Polls inbox messages with optional stateful dedupe and persistent cursors. */
 async function commandInboxWatch(args: string[], global: GlobalCliOptions): Promise<number> {
   const flags = parseFlags(args);
   const accountId = requireString(flags, "account-id");
-  const limit = getNumber(flags, "limit") ?? 100;
-  const intervalSeconds = getNumber(flags, "interval-seconds") ?? 20;
+  const limit = getPositiveInteger(flags, "limit", 100, { max: 250 });
+  const maxPages = getPositiveInteger(flags, "max-pages", 10);
+  const intervalSeconds = getPositiveInteger(flags, "interval-seconds", 20);
   const maxIterations = getNumber(flags, "max-iterations");
   const once = Boolean(flags.get("once"));
-  let sinceCursor = getString(flags, "since");
+  const scope = parseInboxQueryScope(flags);
+  const stateOptions = parseInboxStateOptions(flags);
+  const explicitSince = getString(flags, "since");
 
-  if (intervalSeconds <= 0) {
-    throw new Error("Flag --interval-seconds must be greater than 0.");
+  if (maxIterations !== undefined && (!Number.isInteger(maxIterations) || maxIterations <= 0)) {
+    throw new Error("Flag --max-iterations expects a positive integer.");
   }
 
-  const { client } = await buildClient(global);
-  const seenIds = new Set<string>();
-  let iteration = 0;
-  let totalNew = 0;
+  const { client, profileName } = await buildClient(global);
+  const memorySeen = new Set<string>();
+  let stateStore: InboxStateStore | null = null;
 
-  while (true) {
-    iteration += 1;
+  try {
+    let scopeKey: string | undefined;
+    let sinceCursor = explicitSince;
+    let usedStoredCursor = false;
 
-    const batch = await client.listMessages({
-      accountId,
-      after: sinceCursor,
-      limit
-    });
+    if (stateOptions.useState) {
+      stateStore = await createInboxStateStore();
+      scopeKey = buildInboxScopeKey({
+        profileName,
+        accountId,
+        chatIds: scope.chatIds,
+        senderId: scope.senderId,
+        customStateKey: stateOptions.customStateKey
+      });
 
-    const sorted = [...batch].sort((left, right) => {
-      const leftTs = toEpochMillis(left.timestamp) ?? 0;
-      const rightTs = toEpochMillis(right.timestamp) ?? 0;
-      return leftTs - rightTs;
-    });
-
-    const newMessages = sorted.filter((message) => {
-      if (seenIds.has(message.id)) {
-        return false;
+      if (stateOptions.resetState) {
+        stateStore.resetScope(scopeKey);
       }
 
-      seenIds.add(message.id);
-      return true;
-    });
-
-    if (newMessages.length > 0) {
-      totalNew += newMessages.length;
-      const payload = {
-        mode: "watch_event",
-        account_id: accountId,
-        poll_index: iteration,
-        count: newMessages.length,
-        messages: newMessages
-      };
-      printResult(global.output, payload, () => formatMessages(newMessages));
-    }
-
-    let newestTs = sinceCursor ? toEpochMillis(sinceCursor) : null;
-    for (const message of batch) {
-      const ts = toEpochMillis(message.timestamp);
-      if (ts !== null && (newestTs === null || ts > newestTs)) {
-        newestTs = ts;
+      if (!sinceCursor) {
+        const stored = stateStore.getCursor(scopeKey);
+        if (stored) {
+          sinceCursor = stored;
+          usedStoredCursor = true;
+        }
       }
     }
 
-    if (newestTs !== null) {
-      sinceCursor = new Date(newestTs).toISOString();
+    let iteration = 0;
+    let totalNew = 0;
+    let totalStored = 0;
+
+    while (true) {
+      iteration += 1;
+
+      const batch = await fetchScopedMessages({
+        client,
+        accountId,
+        scope,
+        since: sinceCursor,
+        limit,
+        maxPages
+      });
+
+      const sorted = sortMessagesChronologically(batch);
+      const newMessages: Message[] = [];
+
+      if (stateStore && scopeKey) {
+        for (const message of sorted) {
+          const persisted = stateStore.persistMessage(scopeKey, message);
+          if (persisted.isNewInStore) {
+            totalStored += 1;
+          }
+          if (persisted.isNewForScope) {
+            newMessages.push(message);
+          }
+        }
+      } else {
+        for (const message of sorted) {
+          const key = toMessageKey(message);
+          if (memorySeen.has(key)) {
+            continue;
+          }
+          memorySeen.add(key);
+          newMessages.push(message);
+        }
+      }
+
+      sinceCursor = computeNextSinceCursor(
+        sinceCursor,
+        sorted.map((message) => message.timestamp)
+      );
+
+      if (stateStore && scopeKey) {
+        stateStore.upsertScopeState({
+          scopeKey,
+          profileName,
+          accountId,
+          chatIds: scope.chatIds,
+          senderId: scope.senderId,
+          sinceCursor
+        });
+      }
+
+      if (newMessages.length > 0) {
+        totalNew += newMessages.length;
+        const payload = {
+          mode: "watch_event",
+          account_id: accountId,
+          scope: {
+            chat_ids: scope.chatIds,
+            sender_id: scope.senderId ?? null
+          },
+          poll_index: iteration,
+          count: newMessages.length,
+          messages: newMessages
+        };
+        printResult(global.output, payload, () => formatMessages(newMessages));
+      }
+
+      if (once) {
+        break;
+      }
+
+      if (maxIterations !== undefined && iteration >= maxIterations) {
+        break;
+      }
+
+      await sleep(intervalSeconds * 1000);
     }
 
-    if (once) {
-      break;
-    }
+    const payload = {
+      mode: "watch_done",
+      account_id: accountId,
+      scope: {
+        chat_ids: scope.chatIds,
+        sender_id: scope.senderId ?? null
+      },
+      polls: iteration,
+      total_new_messages: totalNew,
+      last_since_cursor: sinceCursor ?? null,
+      state: {
+        enabled: stateOptions.useState,
+        db_path: stateOptions.useState ? getInboxStatePath() : null,
+        scope_key: stateOptions.useState
+          ? buildInboxScopeKey({
+              profileName,
+              accountId,
+              chatIds: scope.chatIds,
+              senderId: scope.senderId,
+              customStateKey: stateOptions.customStateKey
+            })
+          : null,
+        used_stored_cursor: usedStoredCursor,
+        explicit_since: explicitSince ?? null,
+        new_store_rows: stateOptions.useState ? totalStored : null
+      }
+    };
 
-    if (maxIterations !== undefined && iteration >= maxIterations) {
-      break;
-    }
+    printResult(global.output, payload, () => {
+      return [
+        "Watch completed.",
+        `Account: ${accountId}`,
+        `Polls: ${iteration}`,
+        `New messages: ${totalNew}`,
+        `Last cursor: ${sinceCursor ?? "(none)"}`
+      ].join("\n");
+    });
 
-    await sleep(intervalSeconds * 1000);
+    return 0;
+  } finally {
+    stateStore?.close();
   }
-
-  const payload = {
-    mode: "watch_done",
-    account_id: accountId,
-    polls: iteration,
-    total_new_messages: totalNew,
-    last_since_cursor: sinceCursor ?? null
-  };
-
-  printResult(global.output, payload, () => {
-    return [
-      "Watch completed.",
-      `Account: ${accountId}`,
-      `Polls: ${iteration}`,
-      `New messages: ${totalNew}`,
-      `Last cursor: ${sinceCursor ?? "(none)"}`
-    ].join("\n");
-  });
-
-  return 0;
 }
 
 interface DoctorCheck {
