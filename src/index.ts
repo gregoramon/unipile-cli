@@ -25,6 +25,8 @@ function help(): string {
     "  contacts resolve --account-id <id> --query <text> [--threshold <0..1>] [--margin <0..1>] [--no-qmd]",
     "  send --account-id <id> --text <message> [--chat-id <id> | --attendee-id <id> | --to-query <text>] [--no-qmd]",
     "  inbox pull --account-id <id> [--since <ISO8601>] [--limit <n>]",
+    "  inbox watch --account-id <id> [--since <ISO8601>] [--limit <n>] [--interval-seconds <n>] [--max-iterations <n>] [--once]",
+    "  doctor run [--account-id <id>] [--qmd-query <text>] [--skip-qmd]",
     "",
     "Notes:",
     "  - Core features work without OpenClaw/QMD.",
@@ -123,6 +125,21 @@ function requireString(flags: Map<string, string | boolean>, key: string): strin
     throw new Error(`Missing required flag --${key}.`);
   }
   return value;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function toEpochMillis(value: string | null | undefined): number | null {
+  if (!value || value.trim().length === 0) {
+    return null;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
 }
 
 async function buildClient(global: GlobalCliOptions): Promise<{
@@ -462,6 +479,265 @@ async function commandInboxPull(args: string[], global: GlobalCliOptions): Promi
   return 0;
 }
 
+async function commandInboxWatch(args: string[], global: GlobalCliOptions): Promise<number> {
+  const flags = parseFlags(args);
+  const accountId = requireString(flags, "account-id");
+  const limit = getNumber(flags, "limit") ?? 100;
+  const intervalSeconds = getNumber(flags, "interval-seconds") ?? 20;
+  const maxIterations = getNumber(flags, "max-iterations");
+  const once = Boolean(flags.get("once"));
+  let sinceCursor = getString(flags, "since");
+
+  if (intervalSeconds <= 0) {
+    throw new Error("Flag --interval-seconds must be greater than 0.");
+  }
+
+  const { client } = await buildClient(global);
+  const seenIds = new Set<string>();
+  let iteration = 0;
+  let totalNew = 0;
+
+  while (true) {
+    iteration += 1;
+
+    const batch = await client.listMessages({
+      accountId,
+      after: sinceCursor,
+      limit
+    });
+
+    const sorted = [...batch].sort((left, right) => {
+      const leftTs = toEpochMillis(left.timestamp) ?? 0;
+      const rightTs = toEpochMillis(right.timestamp) ?? 0;
+      return leftTs - rightTs;
+    });
+
+    const newMessages = sorted.filter((message) => {
+      if (seenIds.has(message.id)) {
+        return false;
+      }
+
+      seenIds.add(message.id);
+      return true;
+    });
+
+    if (newMessages.length > 0) {
+      totalNew += newMessages.length;
+      const payload = {
+        mode: "watch_event",
+        account_id: accountId,
+        poll_index: iteration,
+        count: newMessages.length,
+        messages: newMessages
+      };
+      printResult(global.output, payload, () => formatMessages(newMessages));
+    }
+
+    let newestTs = sinceCursor ? toEpochMillis(sinceCursor) : null;
+    for (const message of batch) {
+      const ts = toEpochMillis(message.timestamp);
+      if (ts !== null && (newestTs === null || ts > newestTs)) {
+        newestTs = ts;
+      }
+    }
+
+    if (newestTs !== null) {
+      sinceCursor = new Date(newestTs).toISOString();
+    }
+
+    if (once) {
+      break;
+    }
+
+    if (maxIterations !== undefined && iteration >= maxIterations) {
+      break;
+    }
+
+    await sleep(intervalSeconds * 1000);
+  }
+
+  const payload = {
+    mode: "watch_done",
+    account_id: accountId,
+    polls: iteration,
+    total_new_messages: totalNew,
+    last_since_cursor: sinceCursor ?? null
+  };
+
+  printResult(global.output, payload, () => {
+    return [
+      "Watch completed.",
+      `Account: ${accountId}`,
+      `Polls: ${iteration}`,
+      `New messages: ${totalNew}`,
+      `Last cursor: ${sinceCursor ?? "(none)"}`
+    ].join("\n");
+  });
+
+  return 0;
+}
+
+interface DoctorCheck {
+  name: string;
+  status: "pass" | "warn" | "fail" | "skip";
+  detail: string;
+}
+
+function formatDoctorChecks(checks: DoctorCheck[], summary: string): string {
+  const lines = [summary, "", "Checks:"];
+  for (const check of checks) {
+    lines.push(`- [${check.status.toUpperCase()}] ${check.name}: ${check.detail}`);
+  }
+  return lines.join("\n");
+}
+
+async function commandDoctorRun(args: string[], global: GlobalCliOptions): Promise<number> {
+  const flags = parseFlags(args);
+  const accountId = getString(flags, "account-id");
+  const qmdQuery = getString(flags, "qmd-query") ?? "recent contact from today";
+  const skipQmd = Boolean(flags.get("skip-qmd"));
+  const checks: DoctorCheck[] = [];
+
+  const config = await loadConfig();
+  const profileName = global.profile || config.profile;
+  const profileConfig = getProfileConfig(config, profileName);
+  const apiKey = await getProfileApiKey(profileName);
+
+  if (profileConfig.dsn && profileConfig.dsn.trim().length > 0) {
+    checks.push({
+      name: "profile.dsn",
+      status: "pass",
+      detail: `Configured (${profileConfig.dsn})`
+    });
+  } else {
+    checks.push({
+      name: "profile.dsn",
+      status: "fail",
+      detail: "Missing DSN. Run: unipile auth set --dsn ... --api-key ..."
+    });
+  }
+
+  if (apiKey.apiKey) {
+    checks.push({
+      name: "profile.api_key",
+      status: "pass",
+      detail: `Configured (${apiKey.backend})`
+    });
+  } else {
+    checks.push({
+      name: "profile.api_key",
+      status: "fail",
+      detail: "Missing API key. Run: unipile auth set --dsn ... --api-key ..."
+    });
+  }
+
+  let accountCount: number | null = null;
+  const hasConfigFailures = checks.some((check) => check.status === "fail");
+
+  if (!hasConfigFailures) {
+    const client = new UnipileClient(profileConfig.dsn, apiKey.apiKey as string);
+
+    try {
+      const accounts = await client.listAccounts({ limit: 50 });
+      accountCount = accounts.length;
+
+      checks.push({
+        name: "unipile.accounts",
+        status: "pass",
+        detail: `Fetched ${accounts.length} account(s) with current API key`
+      });
+
+      if (accountId) {
+        const account = accounts.find((item) => item.id === accountId);
+        if (!account) {
+          checks.push({
+            name: "unipile.account_id",
+            status: "fail",
+            detail: `Account ${accountId} not found in /api/v1/accounts`
+          });
+        } else {
+          const [attendees, chats] = await Promise.all([
+            client.listAttendees({ accountId, limit: 25 }),
+            client.listChats({ accountId, limit: 25 })
+          ]);
+
+          checks.push({
+            name: "unipile.messaging_scope",
+            status: "pass",
+            detail: `Account ${accountId}: attendees=${attendees.length}, chats=${chats.length}`
+          });
+        }
+      } else {
+        checks.push({
+          name: "unipile.account_id",
+          status: "skip",
+          detail: "Not provided; pass --account-id to validate attendee/chat endpoints too"
+        });
+      }
+    } catch (error: unknown) {
+      checks.push({
+        name: "unipile.accounts",
+        status: "fail",
+        detail: `Unable to reach Unipile API (${(error as Error).message})`
+      });
+
+      checks.push({
+        name: "unipile.account_id",
+        status: "skip",
+        detail: "Skipped because accounts check failed"
+      });
+    }
+  }
+
+  if (skipQmd) {
+    checks.push({
+      name: "qmd.query",
+      status: "skip",
+      detail: "Skipped by --skip-qmd"
+    });
+  } else {
+    const qmdResult = await queryQmd(qmdQuery, {
+      command: profileConfig.qmdCommand,
+      collection: profileConfig.qmdCollection,
+      timeoutMs: 4000,
+      maxHits: 5
+    });
+
+    if (qmdResult.available) {
+      checks.push({
+        name: "qmd.query",
+        status: "pass",
+        detail: `Available (${qmdResult.hits.length} hit(s) for query "${qmdQuery}")`
+      });
+    } else {
+      checks.push({
+        name: "qmd.query",
+        status: "warn",
+        detail: `Unavailable (${qmdResult.error ?? "unknown error"})`
+      });
+    }
+  }
+
+  const hasFailures = checks.some((check) => check.status === "fail");
+  const hasWarnings = checks.some((check) => check.status === "warn");
+  const summary = hasFailures
+    ? "Doctor result: FAIL"
+    : hasWarnings
+      ? "Doctor result: PASS_WITH_WARNINGS"
+      : "Doctor result: PASS";
+
+  const payload = {
+    profile: profileName,
+    summary: hasFailures ? "fail" : hasWarnings ? "pass_with_warnings" : "pass",
+    account_id: accountId ?? null,
+    account_count: accountCount,
+    checks
+  };
+
+  printResult(global.output, payload, () => formatDoctorChecks(checks, summary));
+  return hasFailures ? 1 : 0;
+}
+
 async function run(): Promise<number> {
   const { global, rest } = parseGlobal(process.argv.slice(2));
 
@@ -498,6 +774,14 @@ async function run(): Promise<number> {
 
   if (group === "inbox" && action === "pull") {
     return commandInboxPull(args, global);
+  }
+
+  if (group === "inbox" && action === "watch") {
+    return commandInboxWatch(args, global);
+  }
+
+  if (group === "doctor" && action === "run") {
+    return commandDoctorRun(args, global);
   }
 
   throw new Error(`Unknown command: ${rest.join(" ")}. Use --help to view available commands.`);
