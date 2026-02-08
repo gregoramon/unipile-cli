@@ -25,7 +25,7 @@ function help(): string {
     "  chats list --account-id <id> [--query <text>] [--group-only] [--limit <n>]",
     "  contacts search --account-id <id> --query <text> [--limit <n>] [--max-candidates <n>] [--no-qmd]",
     "  contacts resolve --account-id <id> --query <text> [--threshold <0..1>] [--margin <0..1>] [--no-qmd]",
-    "  send --account-id <id> --text <message> [--chat-id <id> | --attendee-id <id> | --to-query <text>] [--no-qmd]",
+    "  send --account-id <id> --text <message> [--chat-id <id> | --attendee-id <id> | --to-query <text>] [--attachment <paths>] [--voice-note <file>] [--video <file>] [--typing-duration <ms>] [--no-qmd]",
     "  inbox pull --account-id <id> [--since <ISO8601>] [--limit <n>]",
     "  inbox watch --account-id <id> [--since <ISO8601>] [--limit <n>] [--interval-seconds <n>] [--max-iterations <n>] [--once]",
     "  doctor run [--account-id <id>] [--qmd-query <text>] [--skip-qmd]",
@@ -132,6 +132,18 @@ function requireString(flags: Map<string, string | boolean>, key: string): strin
     throw new Error(`Missing required flag --${key}.`);
   }
   return value;
+}
+
+/** Parses comma-separated file path lists from a flag value. */
+function parsePathList(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
 }
 
 /** Normalizes provider tokens for matching regardless of case or punctuation. */
@@ -520,18 +532,35 @@ async function commandSend(args: string[], global: GlobalCliOptions): Promise<nu
   const chatId = getString(flags, "chat-id");
   const attendeeId = getString(flags, "attendee-id");
   const toQuery = getString(flags, "to-query");
+  const attachments = parsePathList(getString(flags, "attachment"));
+  const voiceMessage = getString(flags, "voice-note");
+  const videoMessage = getString(flags, "video");
+  const typingDuration = getNumber(flags, "typing-duration");
 
   const { client, config, profileName } = await buildClient(global);
   const profileConfig = getProfileConfig(config, profileName);
 
   if (chatId) {
-    const sent = await client.sendMessage({ chatId, text, accountId });
+    const sent = await client.sendMessage({
+      chatId,
+      text,
+      accountId,
+      attachments,
+      voiceMessage,
+      videoMessage,
+      typingDuration
+    });
     const payload = {
       status: "sent",
       mode: "existing_chat",
       chat_id: chatId,
       message_id: sent.message_id,
-      object: sent.object
+      object: sent.object,
+      media: {
+        attachments_count: attachments.length,
+        voice_note: Boolean(voiceMessage),
+        video: Boolean(videoMessage)
+      }
     };
 
     printResult(global.output, payload, () => {
@@ -547,7 +576,11 @@ async function commandSend(args: string[], global: GlobalCliOptions): Promise<nu
       const started = await client.startChat({
         accountId,
         attendeesIds: [whatsappProviderId],
-        text
+        text,
+        attachments,
+        voiceMessage,
+        videoMessage,
+        typingDuration
       });
 
       const payload = {
@@ -557,7 +590,12 @@ async function commandSend(args: string[], global: GlobalCliOptions): Promise<nu
         target_phone: toQuery,
         target_provider_id: whatsappProviderId,
         chat_id: started.chat_id,
-        message_id: started.message_id
+        message_id: started.message_id,
+        media: {
+          attachments_count: attachments.length,
+          voice_note: Boolean(voiceMessage),
+          video: Boolean(videoMessage)
+        }
       };
 
       printResult(global.output, payload, () => {
@@ -642,7 +680,11 @@ async function commandSend(args: string[], global: GlobalCliOptions): Promise<nu
     const sent = await client.sendMessage({
       chatId: existingChat.id,
       text,
-      accountId
+      accountId,
+      attachments,
+      voiceMessage,
+      videoMessage,
+      typingDuration
     });
 
     const payload = {
@@ -652,7 +694,12 @@ async function commandSend(args: string[], global: GlobalCliOptions): Promise<nu
       attendee_id: selectedAttendee.id,
       attendee_provider_id: selectedAttendee.provider_id,
       message_id: sent.message_id,
-      resolution: resolutionPayload
+      resolution: resolutionPayload,
+      media: {
+        attachments_count: attachments.length,
+        voice_note: Boolean(voiceMessage),
+        video: Boolean(videoMessage)
+      }
     };
 
     printResult(global.output, payload, () => {
@@ -665,7 +712,11 @@ async function commandSend(args: string[], global: GlobalCliOptions): Promise<nu
   const started = await client.startChat({
     accountId,
     attendeesIds: [selectedAttendee.provider_id],
-    text
+    text,
+    attachments,
+    voiceMessage,
+    videoMessage,
+    typingDuration
   });
 
   const payload = {
@@ -675,7 +726,12 @@ async function commandSend(args: string[], global: GlobalCliOptions): Promise<nu
     attendee_id: selectedAttendee.id,
     attendee_provider_id: selectedAttendee.provider_id,
     message_id: started.message_id,
-    resolution: resolutionPayload
+    resolution: resolutionPayload,
+    media: {
+      attachments_count: attachments.length,
+      voice_note: Boolean(voiceMessage),
+      video: Boolean(videoMessage)
+    }
   };
 
   printResult(global.output, payload, () => {
